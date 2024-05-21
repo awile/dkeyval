@@ -1,13 +1,12 @@
 package main
 
-
 import "fmt"
 
-
 func main() {
-  kv := NewKeyValue()
-  kv.Set("name", "John")
-  kv.Set("other", "John")
-  kv.Set("name", "Tom")
-  fmt.Println(kv.Get("name"))
+	wal := NewWAL()
+	store := wal.LoadStoreFromWAL()
+	kv := NewKeyValue(store)
+	fmt.Println(kv.Get("name"))
+	fmt.Println(kv.Get("other"))
+	fmt.Println(kv.Get("key"))
 }
