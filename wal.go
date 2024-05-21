@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -32,6 +33,19 @@ func (w *WAL) LoadStoreFromWAL() map[string]interface{} {
 	}
 
 	return store
+}
+
+func (w *WAL) AppendToWAL(key string, value interface{}, is_deleted bool) {
+	writer := bufio.NewWriter(w.appendFile)
+	defer writer.Flush()
+	row := fmt.Sprintf(
+		"%s,%s,%t\n",
+		key, value.(string), is_deleted,
+	)
+	_, err := writer.WriteString(row)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func NewWAL() *WAL {

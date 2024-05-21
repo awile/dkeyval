@@ -12,6 +12,10 @@ func (kv *KeyValue) Get(key string) interface{} {
 	return kv.store[key]
 }
 
+func (kv *KeyValue) Delete(key string) {
+	delete(kv.store, key)
+}
+
 func NewKeyValue(store map[string]interface{}) *KeyValue {
 	return &KeyValue{store: store}
 }
