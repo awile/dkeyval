@@ -16,6 +16,13 @@ func (kv *KeyValue) Delete(key string) {
 	delete(kv.store, key)
 }
 
-func NewKeyValue(store map[string]interface{}) *KeyValue {
+func (kv *KeyValue) Merge(otherStore *KeyValue) {
+	for key, value := range otherStore.store {
+		kv.store[key] = value
+	}
+}
+
+func NewKeyValue() *KeyValue {
+	store := make(map[string]interface{})
 	return &KeyValue{store: store}
 }
