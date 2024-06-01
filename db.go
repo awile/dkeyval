@@ -19,7 +19,7 @@ func (db *DB) Delete(key string) {
 	db.kvStore.Delete(key)
 }
 
-func (db *DB) updateStoreWithSegment(segment *Segment, store *KeyValue) {
+func (db *DB) updateStoreWithSegment(segment Segment, store *KeyValue) {
 	segmentEntries := segment.GetData()
 	for entry := range segmentEntries {
 		if entry.IsDeleted {
@@ -31,7 +31,7 @@ func (db *DB) updateStoreWithSegment(segment *Segment, store *KeyValue) {
 }
 
 func (db *DB) LoadStoreFromWAL() {
-	segmentNames := db.wal.GetSegmentNames()
+	segmentNames := db.wal.ListSegmentNames()
 	for _, segmentName := range segmentNames {
 		segment := db.wal.GetSegment(segmentName)
 		db.updateStoreWithSegment(segment, db.kvStore)

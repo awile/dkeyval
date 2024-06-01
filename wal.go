@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sort"
@@ -19,7 +20,7 @@ type SegmentEntry struct {
 	IsDeleted bool
 }
 
-func ParseSegmentEntry(line string) SegmentEntry {
+func ParseToSegmentEntry(line string) SegmentEntry {
 	parts := strings.Split(line, ",")
 	key := parts[0]
 	value := parts[1]
@@ -30,112 +31,85 @@ func ParseSegmentEntry(line string) SegmentEntry {
 // Segment
 //////////
 
+type SegmentData interface {
+	io.Reader
+	io.Writer
+	Stat() (os.FileInfo, error)
+	Close() error
+}
+
 type Segment struct {
-	Name string
-	file *os.File
+	Name       string
+	Data       SegmentData
+	IsReadOnly bool
 }
 
 func (s *Segment) GetData() (c chan SegmentEntry) {
 	c = make(chan SegmentEntry)
 	go func() {
-		scanner := bufio.NewScanner(s.file)
+		scanner := bufio.NewScanner(s.Data)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if len(line) == 0 {
 				continue
 			}
-			c <- ParseSegmentEntry(line)
+			c <- ParseToSegmentEntry(line)
 		}
 		close(c)
 	}()
 	return c
 }
 
-func (s *Segment) writeEntry(entry SegmentEntry) {
-	writer := bufio.NewWriter(s.file)
+func (s *Segment) WriteEntry(entry SegmentEntry) (err error) {
+	writer := bufio.NewWriter(s.Data)
 	defer writer.Flush()
 	row := fmt.Sprintf(
 		"%s,%s,%t\n",
 		entry.Key, entry.Value, entry.IsDeleted,
 	)
-	_, err := writer.WriteString(row)
+	_, err = writer.WriteString(row)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	return nil
 }
 
-func (s *Segment) Size() int64 {
-	fileInfo, err := s.file.Stat()
+func (s *Segment) Size() (int64, error) {
+	fileInfo, err := s.Data.Stat()
 	if err != nil {
-		log.Fatal(err)
+		return 0, err
 	}
-	return fileInfo.Size()
+	return fileInfo.Size(), nil
 }
 
 func (s *Segment) Close() {
-	s.file.Close()
+	s.Data.Close()
 }
 
-func NewSegment(name string, isReadOnly bool, path string) *Segment {
-	fileMode := os.O_APPEND | os.O_CREATE | os.O_WRONLY
-	if isReadOnly {
-		fileMode = os.O_RDONLY
+func NewSegment(name string, path string, isReadOnly bool) Segment {
+	permissions := os.O_RDONLY
+	if !isReadOnly {
+		permissions = os.O_APPEND | os.O_CREATE | os.O_WRONLY
 	}
-	file, err := os.OpenFile(path+name, fileMode, 0644)
+	file, err := os.OpenFile(path+name, permissions, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
-	return &Segment{Name: name, file: file}
+	return Segment{Name: name, Data: file, IsReadOnly: isReadOnly}
 }
 
-
-// WAL
-//////
-
-type WAL struct {
-	dataDir        string
-	currentSegment *Segment
+// SegmentManager
+type SegmentManager struct {
+	DataDir        string
+	fileNameFormat string
 }
 
-func (w *WAL) getLatestSegmentName() (string, error) {
-	segments := w.GetSegmentNames()
-	if len(segments) == 0 {
-		return "", fmt.Errorf("No segments found")
-	}
-	return segments[len(segments)-1], nil
-}
-
-func (w *WAL) getNextSegmentName() string {
-	fileNameFormat := "%06d.log"
-	latestSegment, err := w.getLatestSegmentName()
+func (sm *SegmentManager) ListSegmentNames() []string {
+	// Return sorted list of segment names
+	// Last item is the latest segment
+	files, err := os.ReadDir(sm.DataDir)
 	if err != nil {
-		return fmt.Sprintf(fileNameFormat, 1)
-	}
-	segmentNumber, err := strconv.Atoi(strings.TrimSuffix(latestSegment, ".log"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	return fmt.Sprintf(fileNameFormat, segmentNumber+1)
-}
-
-func (w *WAL) createNewSegment() *Segment {
-	newSegmentName := w.getNextSegmentName()
-	return NewSegment(newSegmentName, false, w.dataDir)
-}
-
-func (w *WAL) shouldRotateSegment() bool {
-	return w.currentSegment.Size() > 1024
-}
-
-func (w *WAL) rotateSegment() {
-	w.currentSegment.Close()
-	w.currentSegment = w.createNewSegment()
-}
-
-func (w *WAL) GetSegmentNames() []string {
-	files, err := os.ReadDir(w.dataDir)
-	if err != nil {
-		log.Fatal(err)
+		return []string{}
 	}
 	segments := []string{}
 	for _, file := range files {
@@ -147,22 +121,94 @@ func (w *WAL) GetSegmentNames() []string {
 	return segments
 }
 
-func (w *WAL) GetLatestSegment() *Segment {
-	latestSegment, err := w.getLatestSegmentName()
-	if err != nil {
-		return w.createNewSegment()
+func (sm *SegmentManager) GetLatestSegment() *Segment {
+	segments := sm.ListSegmentNames()
+	if len(segments) == 0 {
+		return nil
 	}
-	return NewSegment(latestSegment, false, w.dataDir)
+	latestSegment := NewSegment(segments[len(segments)-1], sm.DataDir, false)
+	return &latestSegment
 }
 
-func (w *WAL) GetSegment(segment string) *Segment {
-	return NewSegment(segment, true, w.dataDir)
+func (sm *SegmentManager) GetSegment(segment string) Segment {
+	return NewSegment(segment, sm.DataDir, true)
+}
+
+func (sm *SegmentManager) getNextSegmentName() (string, error) {
+	latestSegment := sm.GetLatestSegment()
+	if latestSegment == nil {
+		return fmt.Sprintf(sm.fileNameFormat, 1), nil
+	}
+	segmentNumber, err := strconv.Atoi(strings.TrimSuffix(latestSegment.Name, ".log"))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(sm.fileNameFormat, segmentNumber+1), nil
+}
+
+func (sm *SegmentManager) CreateSegment() Segment {
+	nextSegmentName, err := sm.getNextSegmentName()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return NewSegment(nextSegmentName, sm.DataDir, false)
+}
+
+func NewSegmentManager() *SegmentManager {
+	fileFormat := "%06d.log"
+	pwd, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return &SegmentManager{DataDir: pwd + "/data/wal/", fileNameFormat: fileFormat}
+}
+
+// WAL
+//////
+
+type ISegmentManager interface {
+	ListSegmentNames() []string
+	GetSegment(segment string) Segment
+	CreateSegment() Segment
+	GetLatestSegment() *Segment
+}
+
+type WAL struct {
+	SegmentManager ISegmentManager
+	CurrentSegment *Segment
+}
+
+func (w *WAL) SetActiveSegment() {
+	latestSegment := w.SegmentManager.GetLatestSegment()
+	w.CurrentSegment = latestSegment
+}
+
+func (w *WAL) ListSegmentNames() []string {
+	return w.SegmentManager.ListSegmentNames()
+}
+
+func (w *WAL) GetSegment(segment string) Segment {
+	return w.SegmentManager.GetSegment(segment)
+}
+
+func (w *WAL) ShouldRotateActiveSegment() bool {
+	size, err := w.CurrentSegment.Size()
+	if err != nil {
+		return false
+	}
+	return size > 1024
+}
+
+func (w *WAL) RotateSegment() {
+	newSegment := w.SegmentManager.CreateSegment()
+	w.CurrentSegment.Close()
+	w.CurrentSegment = &newSegment
 }
 
 func (w *WAL) AppendToWAL(entry SegmentEntry) {
-	w.currentSegment.writeEntry(entry)
-	if w.shouldRotateSegment() {
-		w.rotateSegment()
+	w.CurrentSegment.WriteEntry(entry)
+	if w.ShouldRotateActiveSegment() {
+		w.RotateSegment()
 	}
 }
 
@@ -171,7 +217,8 @@ func NewWAL() *WAL {
 	if err != nil {
 		log.Fatal(err)
 	}
-	wal := WAL{dataDir: pwd + "/data/wal/", currentSegment: nil}
-	wal.currentSegment = wal.GetLatestSegment()
+	segementManager := SegmentManager{DataDir: pwd + "/data/wal/"}
+	wal := WAL{SegmentManager: &segementManager, CurrentSegment: nil}
+	wal.SetActiveSegment()
 	return &wal
 }
