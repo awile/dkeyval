@@ -1,5 +1,10 @@
 package main
 
+import (
+	"fmt"
+	"time"
+)
+
 type DB struct {
 	kvStore *KeyValue
 	wal     *WAL
@@ -38,9 +43,27 @@ func (db *DB) LoadStoreFromWAL() {
 	}
 }
 
+func (db *DB) startCompaction() {
+	for {
+		totalSize, err := db.wal.GetTotalSize()
+		fmt.Println("Total size: ", totalSize)
+		if err == nil && totalSize > 3000 {
+			db.wal.CompactSegments()
+		}
+		time.Sleep(10 * time.Second)
+	}
+}
+
+func (db *DB) Close() {
+	db.wal.CurrentSegment.Close()
+}
+
 func NewDB() *DB {
 	wal := NewWAL()
 	db := &DB{kvStore: NewKeyValue(), wal: wal}
 	db.LoadStoreFromWAL()
+	go func(db *DB) {
+		db.startCompaction()
+	}(db)
 	return db
 }

@@ -104,6 +104,20 @@ type SegmentManager struct {
 	fileNameFormat string
 }
 
+func getSegmentNumber(segment string) int {
+	value := -1
+	segmentToCheck := strings.TrimSuffix(strings.TrimPrefix(segment, "compacted_"), ".log")
+	if strings.Contains(segment, "compacted_") {
+		items := strings.Split(segmentToCheck, "_")
+		segmentToCheck = items[len(items)-1]
+	}
+	value, err := strconv.Atoi(segmentToCheck)
+	if err != nil {
+		return -1
+	}
+	return value
+}
+
 func (sm *SegmentManager) ListSegmentNames() []string {
 	// Return sorted list of segment names
 	// Last item is the latest segment
@@ -117,7 +131,10 @@ func (sm *SegmentManager) ListSegmentNames() []string {
 			segments = append(segments, file.Name())
 		}
 	}
-	sort.Strings(segments)
+	sort.Slice(segments, func(i, j int) bool {
+		strings.Contains("GeeksforGeeks", "for")
+		return getSegmentNumber(segments[i]) < getSegmentNumber(segments[j])
+	})
 	return segments
 }
 
@@ -154,13 +171,71 @@ func (sm *SegmentManager) CreateSegment() Segment {
 	return NewSegment(nextSegmentName, sm.DataDir, false)
 }
 
-func NewSegmentManager() *SegmentManager {
+func (sm *SegmentManager) DeleteSegment(segmentName string) {
+	segment := sm.GetSegment(segmentName)
+	segment.Close()
+	err := os.Remove(sm.DataDir + segment.Name)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func (sm *SegmentManager) getMergedEntries(segment1 Segment, segment2 Segment) []SegmentEntry {
+	mergedKeys := make(map[string]SegmentEntry)
+	for entry := range segment1.GetData() {
+		if entry.IsDeleted {
+			delete(mergedKeys, entry.Key)
+		} else {
+			mergedKeys[entry.Key] = entry
+		}
+	}
+	for entry := range segment2.GetData() {
+		if entry.IsDeleted {
+			delete(mergedKeys, entry.Key)
+		} else {
+			mergedKeys[entry.Key] = entry
+		}
+	}
+	mergedEntries := []SegmentEntry{}
+	for _, entry := range mergedKeys {
+		mergedEntries = append(mergedEntries, entry)
+	}
+	return mergedEntries
+}
+
+func (sm *SegmentManager) createMergedSegment(segment1 string, segment2 string) *Segment {
+	segment1Number := getSegmentNumber(segment1)
+	segment2Number := getSegmentNumber(segment2)
+	mergedSegmentName := fmt.Sprintf("compacted_%d_%d.log", segment1Number, segment2Number)
+	mergedSegment := NewSegment(mergedSegmentName, sm.DataDir, false)
+	return &mergedSegment
+}
+
+func (sm *SegmentManager) MergeSegments(segment1 string, segment2 string) {
+	fmt.Println("Merging segments...", segment1, segment2)
+	segmentData1 := sm.GetSegment(segment1)
+	segmentData2 := sm.GetSegment(segment2)
+	mergedEntries := sm.getMergedEntries(segmentData1, segmentData2)
+	mergedSegment := sm.createMergedSegment(segment1, segment2)
+	if mergedSegment == nil {
+		return
+	}
+	for _, entry := range mergedEntries {
+		mergedSegment.WriteEntry(entry)
+	}
+	fmt.Println("Merged files: ", mergedSegment.Name)
+	sm.DeleteSegment(segment1)
+	sm.DeleteSegment(segment2)
+	mergedSegment.Close()
+}
+
+func NewSegmentManager() SegmentManager {
 	fileFormat := "%06d.log"
 	pwd, err := os.Getwd()
 	if err != nil {
 		log.Fatal(err)
 	}
-	return &SegmentManager{DataDir: pwd + "/data/wal/", fileNameFormat: fileFormat}
+	return SegmentManager{DataDir: pwd + "/data/wal/", fileNameFormat: fileFormat}
 }
 
 // WAL
@@ -168,9 +243,11 @@ func NewSegmentManager() *SegmentManager {
 
 type ISegmentManager interface {
 	ListSegmentNames() []string
+	DeleteSegment(segment string)
 	GetSegment(segment string) Segment
 	CreateSegment() Segment
 	GetLatestSegment() *Segment
+	MergeSegments(segment1 string, segment2 string)
 }
 
 type WAL struct {
@@ -212,12 +289,36 @@ func (w *WAL) AppendToWAL(entry SegmentEntry) {
 	}
 }
 
-func NewWAL() *WAL {
-	pwd, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
+func (w *WAL) GetTotalSize() (int64, error) {
+	segments := w.ListSegmentNames()
+	totalSize := int64(0)
+	for _, segment := range segments {
+		fullSegment := w.SegmentManager.GetSegment(segment)
+		segmentSize, err := fullSegment.Size()
+		if err != nil {
+			return 0, err
+		}
+		totalSize += segmentSize
 	}
-	segementManager := SegmentManager{DataDir: pwd + "/data/wal/"}
+	return totalSize, nil
+}
+
+func (w *WAL) CompactSegments() {
+	currentSegmentName := w.CurrentSegment.Name
+	segments := w.SegmentManager.ListSegmentNames()
+	nonActiveSegments := []string{}
+	for _, segment := range segments {
+		if segment != currentSegmentName {
+			nonActiveSegments = append(nonActiveSegments, segment)
+		}
+	}
+	if len(nonActiveSegments) >= 2 {
+		w.SegmentManager.MergeSegments(nonActiveSegments[0], nonActiveSegments[1])
+	}
+}
+
+func NewWAL() *WAL {
+	segementManager := NewSegmentManager()
 	wal := WAL{SegmentManager: &segementManager, CurrentSegment: nil}
 	wal.SetActiveSegment()
 	return &wal
