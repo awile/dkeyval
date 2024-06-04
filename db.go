@@ -48,9 +48,20 @@ func (db *DB) startCompaction() {
 		totalSize, err := db.wal.GetTotalSize()
 		fmt.Println("Total size: ", totalSize)
 		if err == nil && totalSize > 3000 {
+			// Only start compacting if total space > 3000
+			// This is compiling into a single file, so is pretty inefficient now
 			db.wal.CompactSegments()
 		}
 		time.Sleep(10 * time.Second)
+	}
+}
+
+func (db *DB) startLogRotation() *KeyValue {
+	for {
+		if db.wal.ShouldRotateActiveSegment() {
+			db.wal.RotateSegment()
+		}
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -64,6 +75,9 @@ func NewDB() *DB {
 	db.LoadStoreFromWAL()
 	go func(db *DB) {
 		db.startCompaction()
+	}(db)
+	go func(db *DB) {
+		db.startLogRotation()
 	}(db)
 	return db
 }

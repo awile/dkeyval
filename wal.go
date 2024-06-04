@@ -212,7 +212,6 @@ func (sm *SegmentManager) createMergedSegment(segment1 string, segment2 string) 
 }
 
 func (sm *SegmentManager) MergeSegments(segment1 string, segment2 string) {
-	fmt.Println("Merging segments...", segment1, segment2)
 	segmentData1 := sm.GetSegment(segment1)
 	segmentData2 := sm.GetSegment(segment2)
 	mergedEntries := sm.getMergedEntries(segmentData1, segmentData2)
@@ -223,7 +222,6 @@ func (sm *SegmentManager) MergeSegments(segment1 string, segment2 string) {
 	for _, entry := range mergedEntries {
 		mergedSegment.WriteEntry(entry)
 	}
-	fmt.Println("Merged files: ", mergedSegment.Name)
 	sm.DeleteSegment(segment1)
 	sm.DeleteSegment(segment2)
 	mergedSegment.Close()
@@ -284,9 +282,6 @@ func (w *WAL) RotateSegment() {
 
 func (w *WAL) AppendToWAL(entry SegmentEntry) {
 	w.CurrentSegment.WriteEntry(entry)
-	if w.ShouldRotateActiveSegment() {
-		w.RotateSegment()
-	}
 }
 
 func (w *WAL) GetTotalSize() (int64, error) {
